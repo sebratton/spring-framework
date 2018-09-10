@@ -104,9 +104,9 @@ public abstract class AbstractApplicationEventMulticaster
 			// in order to avoid double invocations of the same listener.
 			Object singletonTarget = AopProxyUtils.getSingletonTarget(listener);
 			if (singletonTarget instanceof ApplicationListener) {
-				this.defaultRetriever.applicationListeners.remove(singletonTarget);
+				this.defaultRetriever.removeApplicationListener((ApplicationListener<?>)singletonTarget);
 			}
-			this.defaultRetriever.applicationListeners.add(listener);
+			this.defaultRetriever.addApplicationListener(listener);
 			this.retrieverCache.clear();
 		}
 	}
@@ -114,7 +114,7 @@ public abstract class AbstractApplicationEventMulticaster
 	@Override
 	public void addApplicationListenerBean(String listenerBeanName) {
 		synchronized (this.retrievalMutex) {
-			this.defaultRetriever.applicationListenerBeans.add(listenerBeanName);
+			this.defaultRetriever.addApplicationListenerBean(listenerBeanName);
 			this.retrieverCache.clear();
 		}
 	}
@@ -122,7 +122,7 @@ public abstract class AbstractApplicationEventMulticaster
 	@Override
 	public void removeApplicationListener(ApplicationListener<?> listener) {
 		synchronized (this.retrievalMutex) {
-			this.defaultRetriever.applicationListeners.remove(listener);
+			this.defaultRetriever.removeApplicationListener(listener);
 			this.retrieverCache.clear();
 		}
 	}
@@ -130,7 +130,7 @@ public abstract class AbstractApplicationEventMulticaster
 	@Override
 	public void removeApplicationListenerBean(String listenerBeanName) {
 		synchronized (this.retrievalMutex) {
-			this.defaultRetriever.applicationListenerBeans.remove(listenerBeanName);
+			this.defaultRetriever.removeApplicationListenerBean(listenerBeanName);
 			this.retrieverCache.clear();
 		}
 	}
@@ -138,8 +138,8 @@ public abstract class AbstractApplicationEventMulticaster
 	@Override
 	public void removeAllListeners() {
 		synchronized (this.retrievalMutex) {
-			this.defaultRetriever.applicationListeners.clear();
-			this.defaultRetriever.applicationListenerBeans.clear();
+			this.defaultRetriever.clearApplicationListeners();
+			this.defaultRetriever.clearApplicationListenerBeans();
 			this.retrieverCache.clear();
 		}
 	}
@@ -214,13 +214,13 @@ public abstract class AbstractApplicationEventMulticaster
 		Set<ApplicationListener<?>> listeners;
 		Set<String> listenerBeans;
 		synchronized (this.retrievalMutex) {
-			listeners = new LinkedHashSet<ApplicationListener<?>>(this.defaultRetriever.applicationListeners);
-			listenerBeans = new LinkedHashSet<String>(this.defaultRetriever.applicationListenerBeans);
+			listeners = new LinkedHashSet<ApplicationListener<?>>(this.defaultRetriever.getApplicationListenersWithoutBeans());
+			listenerBeans = new LinkedHashSet<String>(this.defaultRetriever.getApplicationListenerBeans());
 		}
 		for (ApplicationListener<?> listener : listeners) {
 			if (supportsEvent(listener, eventType, sourceType)) {
 				if (retriever != null) {
-					retriever.applicationListeners.add(listener);
+					retriever.addApplicationListener(listener);
 				}
 				allListeners.add(listener);
 			}
@@ -235,7 +235,7 @@ public abstract class AbstractApplicationEventMulticaster
 								beanFactory.getBean(listenerBeanName, ApplicationListener.class);
 						if (!allListeners.contains(listener) && supportsEvent(listener, eventType, sourceType)) {
 							if (retriever != null) {
-								retriever.applicationListenerBeans.add(listenerBeanName);
+								retriever.addApplicationListenerBean(listenerBeanName);
 							}
 							allListeners.add(listener);
 						}
@@ -345,39 +345,84 @@ public abstract class AbstractApplicationEventMulticaster
 	 */
 	private class ListenerRetriever {
 
-		public final Set<ApplicationListener<?>> applicationListeners;
-
-		public final Set<String> applicationListenerBeans;
+        private Set<String> applicationListenerBeansSet;
+		
+	    private LinkedList<ApplicationListener<?>> sortedApplicationListenersList;
 
 		private final boolean preFiltered;
 
 		public ListenerRetriever(boolean preFiltered) {
-			this.applicationListeners = new LinkedHashSet<ApplicationListener<?>>();
-			this.applicationListenerBeans = new LinkedHashSet<String>();
+			
+			this.applicationListenerBeansSet = new LinkedHashSet<String>();
+			this.sortedApplicationListenersList = new LinkedList<ApplicationListener<?>>();
 			this.preFiltered = preFiltered;
 		}
 
+		public Collection<? extends ApplicationListener<?>> getApplicationListenersWithoutBeans() {
+		  return sortedApplicationListenersList;
+		}
+
+		public void clearApplicationListeners() {
+          sortedApplicationListenersList.clear();
+        }
+
+		public Collection<? extends String> getApplicationListenerBeans() {
+		  return applicationListenerBeansSet;
+		}
+
+		public void addApplicationListener(ApplicationListener<?> listener) {
+		  if (!sortedApplicationListenersList.contains(listener)) {
+		    sortedApplicationListenersList.add(listener);
+		    AnnotationAwareOrderComparator.sort(sortedApplicationListenersList);
+		  }
+		}
+		
+		public void removeApplicationListener(ApplicationListener<?> listener) {
+		  sortedApplicationListenersList.remove(listener);
+        }
+		
+		public void addApplicationListenerBean(String listenerBean) {
+		  applicationListenerBeansSet.add(listenerBean);
+        }
+        
+        public void removeApplicationListenerBean(String listenerBean) {
+          applicationListenerBeansSet.remove(listenerBean);
+        }
+        
+        public void clearApplicationListenerBeans() {
+          applicationListenerBeansSet.clear();
+          
+        }
+		
 		public Collection<ApplicationListener<?>> getApplicationListeners() {
+			
+			
+			if (applicationListenerBeansSet.isEmpty()) {
+			  return sortedApplicationListenersList;
+			} 
+					
 			LinkedList<ApplicationListener<?>> allListeners = new LinkedList<ApplicationListener<?>>();
-			for (ApplicationListener<?> listener : this.applicationListeners) {
+			
+			for (ApplicationListener<?> listener : sortedApplicationListenersList) {
 				allListeners.add(listener);
 			}
-			if (!this.applicationListenerBeans.isEmpty()) {
-				BeanFactory beanFactory = getBeanFactory();
-				for (String listenerBeanName : this.applicationListenerBeans) {
-					try {
-						ApplicationListener<?> listener = beanFactory.getBean(listenerBeanName, ApplicationListener.class);
-						if (this.preFiltered || !allListeners.contains(listener)) {
-							allListeners.add(listener);
-						}
-					}
-					catch (NoSuchBeanDefinitionException ex) {
-						// Singleton listener instance (without backing bean definition) disappeared -
-						// probably in the middle of the destruction phase
-					}
-				}
+			
+			BeanFactory beanFactory = getBeanFactory();
+			for (String listenerBeanName : this.applicationListenerBeansSet) {
+			  try {
+			    ApplicationListener<?> listener = beanFactory.getBean(listenerBeanName, ApplicationListener.class);
+			    if (this.preFiltered || !allListeners.contains(listener)) {
+			      allListeners.add(listener);
+			    }
+			  }
+			  catch (NoSuchBeanDefinitionException ex) {
+			    // Singleton listener instance (without backing bean definition) disappeared -
+			    // probably in the middle of the destruction phase
+			  }
 			}
+			
 			AnnotationAwareOrderComparator.sort(allListeners);
+			
 			return allListeners;
 		}
 	}
